@@ -21,7 +21,7 @@
     "vpt_type":"shallow",
     "prompt_token_num":5,
 
-    "func_epoch": 5,
+    "func_epoch": 2,
     "rd_epoch": 20,
     "init_lr": 0.005,
     "rd_lr": 0.01,
