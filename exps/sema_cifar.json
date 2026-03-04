@@ -22,7 +22,7 @@
     "prompt_token_num":5,
 
     "func_epoch": 2,
-    "rd_epoch": 20,
+    "rd_epoch": 8,
     "init_lr": 0.005,
     "rd_lr": 0.01,
     "rd_dim": 128,
