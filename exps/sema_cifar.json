@@ -31,6 +31,10 @@
 
     "exp_threshold": 2,
     "adapt_start_layer": 9,
-    "adapt_end_layer": 11
+    "adapt_end_layer": 11,
+
+    "task_builder": "online_sampler",
+    "n": 50,
+    "m": 10
 }
 
