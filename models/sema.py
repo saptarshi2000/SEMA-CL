@@ -21,6 +21,7 @@ class Learner(BaseLearner):
         self._network = SEMAVitNet(args, True)
         self. batch_size= args["batch_size"]
         self. init_lr=args["init_lr"]
+        self._online_sampler_mode = False
         
         self.weight_decay=args["weight_decay"] if args["weight_decay"] is not None else 0.0005
         self.min_lr=args['min_lr'] if args['min_lr'] is not None else 1e-8
@@ -31,6 +32,8 @@ class Learner(BaseLearner):
 
     def incremental_train(self, data_manager):
         self._cur_task += 1
+        self._online_sampler_mode = getattr(data_manager, "_task_builder", "") == "online_sampler"
+
         if self._cur_task == 0:
             self._network.fc = nn.Linear(768, data_manager.nb_classes)
             nn.init.kaiming_uniform_(self._network.fc.weight, a=math.sqrt(5))
@@ -131,9 +134,10 @@ class Learner(BaseLearner):
                 outcome = self._network(inputs)
 
                 logits = outcome["logits"]
-                logits = logits[:, :self._total_classes]
-                if self._cur_task > 0:
-                    logits[:, :self._known_classes] = -float('inf')
+                if not self._online_sampler_mode:
+                    logits = logits[:, :self._total_classes]
+                    if self._cur_task > 0:
+                        logits[:, :self._known_classes] = -float('inf')
 
                 if phase == "func":
                     loss = F.cross_entropy(logits, targets)
