@@ -33,7 +33,6 @@ class Learner(BaseLearner):
     def incremental_train(self, data_manager):
         self._cur_task += 1
         self._online_sampler_mode = getattr(data_manager, "_task_builder", "") == "online_sampler"
-
         if self._cur_task == 0:
             self._network.fc = nn.Linear(768, data_manager.nb_classes)
             nn.init.kaiming_uniform_(self._network.fc.weight, a=math.sqrt(5))
@@ -46,7 +45,11 @@ class Learner(BaseLearner):
         self.data_manager=data_manager
         self.train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=num_workers)
 
-        test_dataset = data_manager.get_dataset(np.arange(0, self._total_classes), source="test", mode="test" )
+        if self._online_sampler_mode:
+            test_indices = np.arange(self._known_classes, self._total_classes)
+        else:
+            test_indices = np.arange(0, self._total_classes)
+        test_dataset = data_manager.get_dataset(test_indices, source="test", mode="test" )
         self.test_loader = DataLoader(test_dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
 
         train_dataset_for_protonet=data_manager.get_dataset(np.arange(self._known_classes, self._total_classes),source="train", mode="test", )
@@ -179,7 +182,10 @@ class Learner(BaseLearner):
             with torch.no_grad():
                 outcome = self._network(inputs)
                 logits = outcome["logits"]
-                outputs = logits[:, :self._total_classes]
+                if self._online_sampler_mode:
+                    outputs = logits
+                else:
+                    outputs = logits[:, :self._total_classes]
             predicts = torch.topk(
                 outputs, k=self.topk, dim=1, largest=True, sorted=True
             )[
@@ -198,7 +204,10 @@ class Learner(BaseLearner):
             with torch.no_grad():
                 outcome = self._network(inputs)
                 logits = outcome["logits"]
-                outputs = logits[:, :self._total_classes]
+                if self._online_sampler_mode:
+                    outputs = logits
+                else:
+                    outputs = logits[:, :self._total_classes]
             predicts = torch.max(outputs, dim=1)[1]
             correct += (predicts.cpu() == targets).sum()
             total += len(targets)
