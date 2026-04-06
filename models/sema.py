@@ -257,7 +257,7 @@ class Learner(BaseLearner):
             n_old   = self._class_sample_counts[c]
 
             # L2-normalize each sample vector onto the unit hypersphere
-            vecs = (vecs.T / (np.linalg.norm(vecs.T, axis=0) + 1e-8)).T
+            # vecs = (vecs.T / (np.linalg.norm(vecs.T, axis=0) + 1e-8)).T
 
             # Mean of current task's samples for this class
             new_mean = np.mean(vecs, axis=0)
@@ -270,8 +270,7 @@ class Learner(BaseLearner):
                 n_total      = n_old + n_new
                 updated_mean = (n_old / n_total) * self._sema_class_means[c] + (n_new / n_total) * new_mean
 
-            # L2-normalize the prototype to keep it on the unit hypersphere
-            self._sema_class_means[c]   = updated_mean / np.linalg.norm(updated_mean)
+            self._sema_class_means[c]   = updated_mean 
             self._class_sample_counts[c] += n_new
 
         seen_classes = np.unique(labels).tolist()
