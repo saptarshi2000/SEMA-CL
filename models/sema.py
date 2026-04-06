@@ -92,6 +92,8 @@ class Learner(BaseLearner):
             if isinstance(module, SEMAModules):
                 module.end_of_task_training()
 
+                self._compute_class_means()
+
     def _train_new(self, train_loader, test_loader):
         self.update_optimizer_and_scheduler(num_epoch=self.args['func_epoch'], lr=self.init_lr)
         self._init_train(self.args['func_epoch'], train_loader, test_loader, self.optimizer, self.scheduler, phase='func')
@@ -213,6 +215,70 @@ class Learner(BaseLearner):
             total += len(targets)
 
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
+
+    
+    def _compute_class_means(self):
+        # Initialise once using full dataset size (nb_classes) not _total_classes.
+        # Blurry tasks can contain labels beyond _total_classes (e.g. class 30 in task 0).
+        if not hasattr(self, '_class_sample_counts'):
+            nb_classes = self.data_manager.nb_classes
+            self._sema_class_means = np.zeros((nb_classes, self.feature_dim))
+            self._class_sample_counts = np.zeros(nb_classes, dtype=int)
+
+        self._network.eval()
+
+        # Load this task's training data without augmentation for clean features
+        train_dataset = self.data_manager.get_dataset(
+            np.arange(self._known_classes, self._total_classes),
+            source="train",
+            mode="test",
+        )
+        loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
+
+        # SEMAVitNet.extract_vector() returns a dict from backbone — use ["features"] to get tensor.
+        # Unwrap DataParallel manually since extract_vector() is not exposed through it.
+        network = self._network.module if isinstance(self._network, nn.DataParallel) else self._network
+        vectors, labels = [], []
+        with torch.no_grad():
+            for _, inputs, targets in loader:
+                out = network.extract_vector(inputs.to(self._device))
+                vectors.append(out["features"].cpu().numpy())
+                labels.append(targets.numpy())
+        vectors = np.concatenate(vectors)
+        labels  = np.concatenate(labels)
+
+        for c in np.unique(labels):
+            mask    = labels == c
+            vecs    = vectors[mask]                                               # (N_c, D)
+            n_new   = int(mask.sum())
+            n_old   = self._class_sample_counts[c]
+
+            # L2-normalize each sample vector onto the unit hypersphere
+            vecs = (vecs.T / (np.linalg.norm(vecs.T, axis=0) + 1e-8)).T
+
+            # Mean of current task's samples for this class
+            new_mean = np.mean(vecs, axis=0)
+
+            if n_old == 0:
+                # First time seeing this class
+                updated_mean = new_mean
+            else:
+                # Incremental mean: v = (n_old/n_total)*v_old + (n_new/n_total)*v_new
+                n_total      = n_old + n_new
+                updated_mean = (n_old / n_total) * self._sema_class_means[c] + (n_new / n_total) * new_mean
+
+            # L2-normalise the prototype to keep it on the unit hypersphere
+            self._sema_class_means[c]   = updated_mean / np.linalg.norm(updated_mean)
+            self._class_sample_counts[c] += n_new
+
+        seen_classes = np.unique(labels).tolist()
+        logging.info("Task {}: class means updated for {}".format(self._cur_task, seen_classes))
+        for c in seen_classes:
+            logging.info("  Class {:3d}: norm={:.4f}, total_samples={}".format(
+                c, np.linalg.norm(self._sema_class_means[c]), self._class_sample_counts[c]
+            ))
+
+        self._network.train()
 
 
     def update_optimizer_and_scheduler(self, num_epoch=20, lr=None):
