@@ -28,7 +28,9 @@ class Learner(BaseLearner):
         self.args=args
 
     def after_task(self):
+        self._compute_class_means()
         self._known_classes = self._total_classes
+        
 
     def incremental_train(self, data_manager):
         self._cur_task += 1
@@ -92,7 +94,7 @@ class Learner(BaseLearner):
             if isinstance(module, SEMAModules):
                 module.end_of_task_training()
 
-                self._compute_class_means()
+                
 
     def _train_new(self, train_loader, test_loader):
         self.update_optimizer_and_scheduler(num_epoch=self.args['func_epoch'], lr=self.init_lr)
@@ -217,9 +219,10 @@ class Learner(BaseLearner):
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
 
     
+    
     def _compute_class_means(self):
-        # Initialise once using full dataset size (nb_classes) not _total_classes.
-        # Blurry tasks can contain labels beyond _total_classes (e.g. class 30 in task 0).
+        # Initialise once — preserved across tasks for incremental mean update.
+        # Sized by nb_classes so blurry labels don't cause IndexError.
         if not hasattr(self, '_class_sample_counts'):
             nb_classes = self.data_manager.nb_classes
             self._sema_class_means = np.zeros((nb_classes, self.feature_dim))
@@ -267,7 +270,7 @@ class Learner(BaseLearner):
                 n_total      = n_old + n_new
                 updated_mean = (n_old / n_total) * self._sema_class_means[c] + (n_new / n_total) * new_mean
 
-            # L2-normalise the prototype to keep it on the unit hypersphere
+            # L2-normalize the prototype to keep it on the unit hypersphere
             self._sema_class_means[c]   = updated_mean / np.linalg.norm(updated_mean)
             self._class_sample_counts[c] += n_new
 
@@ -279,6 +282,7 @@ class Learner(BaseLearner):
             ))
 
         self._network.train()
+
 
 
     def update_optimizer_and_scheduler(self, num_epoch=20, lr=None):
