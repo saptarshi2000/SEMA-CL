@@ -277,7 +277,7 @@ class Learner(BaseLearner):
         seen_classes = np.unique(labels).tolist()
         logging.info("Task {}: class means updated for {}".format(self._cur_task, seen_classes))
         for c in seen_classes:
-            logging.info("  Class {:3d}: norm={:.4f}, total_samples={}".format(
+            logging.info("  Class {:3d}: norm={:.4f}, total_samples={}, mean[:5]={}".format(
                 c, np.linalg.norm(self._sema_class_means[c]), self._class_sample_counts[c],
                 np.round(self._sema_class_means[c][:5], 4)
             ))
