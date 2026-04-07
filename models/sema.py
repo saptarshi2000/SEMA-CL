@@ -12,10 +12,11 @@ from utils.inc_net import SEMAVitNet
 from models.base import BaseLearner
 from utils.toolkit import tensor2numpy
 from backbone.sema_block import SEMAModules
+from models.novelty import NoveltyMixin
 
 num_workers = 8
 
-class Learner(BaseLearner):
+class Learner(BaseLearner, NoveltyMixin):
     def __init__(self, args):
         super().__init__(args)
         self._network = SEMAVitNet(args, True)
@@ -217,91 +218,6 @@ class Learner(BaseLearner):
             total += len(targets)
 
         return np.around(tensor2numpy(correct) * 100 / total, decimals=2)
-
-    
-    
-    def _compute_class_means(self):
-        # Initialise once — preserved across tasks for incremental mean update.
-        # Sized by nb_classes so blurry labels don't cause IndexError.
-        if not hasattr(self, '_class_sample_counts'):
-            nb_classes = self.data_manager.nb_classes
-            self._sema_class_means = np.zeros((nb_classes, self.feature_dim))
-            self._class_sample_counts = np.zeros(nb_classes, dtype=int)
-            self._class_mean_history = {}  # {class_id: {task_id: mean_vector}}
-
-        self._network.eval()
-
-        # Load this task's training data without augmentation for clean features
-        train_dataset = self.data_manager.get_dataset(
-            np.arange(self._known_classes, self._total_classes),
-            source="train",
-            mode="test",
-        )
-        loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
-
-        # SEMAVitNet.extract_vector() returns a dict from backbone — use ["features"] to get tensor.
-        # Unwrap DataParallel manually since extract_vector() is not exposed through it.
-        network = self._network.module if isinstance(self._network, nn.DataParallel) else self._network
-        vectors, labels = [], []
-        with torch.no_grad():
-            for _, inputs, targets in loader:
-                out = network.extract_vector(inputs.to(self._device))
-                vectors.append(out["features"].cpu().numpy())
-                labels.append(targets.numpy())
-        vectors = np.concatenate(vectors)
-        labels  = np.concatenate(labels)
-
-        for c in np.unique(labels):
-            mask    = labels == c
-            vecs    = vectors[mask]                                               # (N_c, D)
-            n_new   = int(mask.sum())
-            n_old   = self._class_sample_counts[c]
-
-            # L2-normalize each sample vector onto the unit hypersphere
-            # vecs = (vecs.T / (np.linalg.norm(vecs.T, axis=0) + 1e-8)).T
-
-            # Mean of current task's samples for this class
-            new_mean = np.mean(vecs, axis=0)
-
-            if n_old == 0:
-                # First time seeing this class
-                updated_mean = new_mean
-            else:
-                # Incremental mean: v = (n_old/n_total)*v_old + (n_new/n_total)*v_new
-                n_total      = n_old + n_new
-                updated_mean = (n_old / n_total) * self._sema_class_means[c] + (n_new / n_total) * new_mean
-
-            self._sema_class_means[c]   = updated_mean
-            self._class_sample_counts[c] += n_new
-
-            # Store snapshot for drift tracking
-            if c not in self._class_mean_history:
-                self._class_mean_history[c] = {}
-            self._class_mean_history[c][self._cur_task] = updated_mean.copy()
-
-        seen_classes = np.unique(labels).tolist()
-        logging.info("Task {}: class means updated for {}".format(self._cur_task, seen_classes))
-        for c in seen_classes:
-            logging.info("  Class {:3d}: norm={:.4f}, total_samples={}, mean[:5]={}".format(
-                c, np.linalg.norm(self._sema_class_means[c]), self._class_sample_counts[c],
-                np.round(self._sema_class_means[c][:5], 4)
-            ))
-
-        # Log drift for classes seen in more than one task
-        if self._cur_task > 0:
-            logging.info("Task {}: mean drift".format(self._cur_task))
-            for c in sorted(self._class_mean_history.keys()):
-                task_ids = sorted(self._class_mean_history[c].keys())
-                if len(task_ids) < 2:
-                    continue
-                old_task = task_ids[-2]
-                new_task = task_ids[-1]
-                old_mean = self._class_mean_history[c][old_task]
-                new_mean = self._class_mean_history[c][new_task]
-                drift = np.linalg.norm(new_mean - old_mean)
-                logging.info("  Class {}: task {} -> {}, drift = {:.6f}".format(c, old_task, new_task, drift))
-
-        self._network.train()
 
 
 
