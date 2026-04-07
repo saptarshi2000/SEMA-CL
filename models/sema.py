@@ -227,6 +227,7 @@ class Learner(BaseLearner):
             nb_classes = self.data_manager.nb_classes
             self._sema_class_means = np.zeros((nb_classes, self.feature_dim))
             self._class_sample_counts = np.zeros(nb_classes, dtype=int)
+            self._class_mean_history = {}  # {class_id: {task_id: mean_vector}}
 
         self._network.eval()
 
@@ -270,8 +271,13 @@ class Learner(BaseLearner):
                 n_total      = n_old + n_new
                 updated_mean = (n_old / n_total) * self._sema_class_means[c] + (n_new / n_total) * new_mean
 
-            self._sema_class_means[c]   = updated_mean 
+            self._sema_class_means[c]   = updated_mean
             self._class_sample_counts[c] += n_new
+
+            # Store snapshot for drift tracking
+            if c not in self._class_mean_history:
+                self._class_mean_history[c] = {}
+            self._class_mean_history[c][self._cur_task] = updated_mean.copy()
 
         seen_classes = np.unique(labels).tolist()
         logging.info("Task {}: class means updated for {}".format(self._cur_task, seen_classes))
@@ -280,6 +286,20 @@ class Learner(BaseLearner):
                 c, np.linalg.norm(self._sema_class_means[c]), self._class_sample_counts[c],
                 np.round(self._sema_class_means[c][:5], 4)
             ))
+
+        # Log drift for classes seen in more than one task
+        if self._cur_task > 0:
+            logging.info("Task {}: mean drift".format(self._cur_task))
+            for c in sorted(self._class_mean_history.keys()):
+                task_ids = sorted(self._class_mean_history[c].keys())
+                if len(task_ids) < 2:
+                    continue
+                old_task = task_ids[-2]
+                new_task = task_ids[-1]
+                old_mean = self._class_mean_history[c][old_task]
+                new_mean = self._class_mean_history[c][new_task]
+                drift = np.linalg.norm(new_mean - old_mean)
+                logging.info("  Class {}: task {} -> {}, drift = {:.6f}".format(c, old_task, new_task, drift))
 
         self._network.train()
 
