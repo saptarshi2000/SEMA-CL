@@ -136,7 +136,6 @@ class Learner(BaseLearner, NoveltyMixin):
         self._init_train(self.args['rd_epoch'], train_loader, test_loader, self.rd_optimizer, self.rd_scheduler, phase='rd')
 
     def _detect_outlier(self, detect_loader, train_loader, test_loader, added):
-        is_added = False
         for i, (_, inputs, targets) in enumerate(detect_loader):
             inputs, targets = inputs.to(self._device), targets.to(self._device)
             model_outcome = self._network(inputs)
@@ -144,24 +143,19 @@ class Learner(BaseLearner, NoveltyMixin):
 
             if sum(added_record) > 0:
                 added += 1
-                is_added = True
                 for module in self._network.backbone.modules():
                     if isinstance(module, SEMAModules):
                         module.detecting_outlier = False
                 self._train_new(train_loader, test_loader)
                 for module in self._network.backbone.modules():
                     if isinstance(module, SEMAModules):
-                        module.detecting_outlier = True
-                for module in self._network.backbone.modules():
-                    if isinstance(module, SEMAModules):
                         module.freeze_functional()
                         module.freeze_rd()
                         module.reset_newly_added_status()
-        
-        if is_added:
-            return self._detect_outlier(detect_loader, train_loader, test_loader, added)
-        else:
-            return added
+                # Stop after first adapter — one adapter per task
+                return added
+
+        return added
 
     def _init_train(self, total_epoch, train_loader, test_loader, optimizer, scheduler, phase='func'):
         prog_bar = tqdm(range(total_epoch))
