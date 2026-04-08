@@ -171,7 +171,7 @@ class NoveltyMixin:
             )
         )
 
-    def check_expansion(self, task_data_loader, diff_threshold=5.0):
+    def check_expansion(self, task_data_loader, diff_threshold=3.5):
         """Check whether new task data is novel enough to trigger adapter expansion.
 
         Compares the mean distance of new task samples to nearest known class
