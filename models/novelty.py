@@ -171,17 +171,16 @@ class NoveltyMixin:
             )
         )
 
-    def check_expansion(self, task_data_loader, z_threshold=2.0, ratio_threshold=0.5):
+    def check_expansion(self, task_data_loader, diff_threshold=5.0):
         """Check whether new task data is novel enough to trigger adapter expansion.
 
-        Extracts features for incoming task data, computes distance to all
-        known class means, converts to z-scores against baseline stats from
-        the previous task. If enough samples are outliers, returns True.
+        Compares the mean distance of new task samples to nearest known class
+        mean against the baseline mean distance from previous task. If new data
+        sits significantly farther from known means, it's novel.
 
         Args:
             task_data_loader: DataLoader for the incoming task's training data.
-            z_threshold: z-score above which a sample is considered novel.
-            ratio_threshold: fraction of novel samples needed to trigger expansion.
+            diff_threshold: if (new_mean_dist - baseline_mean_dist) > this, expand.
 
         Returns:
             bool: True if expansion should be triggered.
@@ -209,21 +208,20 @@ class NoveltyMixin:
                 all_feats.append(out["features"].cpu().numpy())
         features = np.concatenate(all_feats)  # (N, D)
 
-        # Min distance to nearest known class mean
+        # Mean distance of new data to nearest known class mean
         min_dists = self._min_distances_to_means(features, mean_matrix)
+        new_mean_dist = min_dists.mean()
 
-        # Z-score against baseline from previous task
-        z_scores = (min_dists - self._dist_mean) / self._dist_std
-        novelty_ratio = (z_scores > z_threshold).mean()
-
-        should_expand = novelty_ratio > ratio_threshold
+        # Raw difference: how much farther is new data from known means
+        diff = new_mean_dist - self._dist_mean
+        should_expand = diff > diff_threshold
 
         logging.info(
             "NoveltyMixin: expansion check — "
-            "mean_dist={:.4f}, mean_z={:.4f}, "
-            "novelty_ratio={:.4f}, expand={}".format(
-                min_dists.mean(), z_scores.mean(),
-                novelty_ratio, should_expand
+            "new_mean_dist={:.4f}, baseline_mean_dist={:.4f}, "
+            "diff={:.4f}, threshold={:.4f}, expand={}".format(
+                new_mean_dist, self._dist_mean,
+                diff, diff_threshold, should_expand
             )
         )
 
