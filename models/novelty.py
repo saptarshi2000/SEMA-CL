@@ -111,4 +111,120 @@ class NoveltyMixin:
                 drift = np.linalg.norm(new_mean - old_mean)
                 logging.info("  Class {}: task {} -> {}, drift = {:.6f}".format(c, old_task, new_task, drift))
 
+        # --- Step 5: Update baseline distance stats for expansion checks ---
+        self._update_distance_stats(vectors, labels)
+
         self._network.train()
+
+    def _min_distances_to_means(self, features, mean_matrix):
+        """Compute min distance from each sample to nearest class mean.
+
+        Processes in batches of 1000 to avoid creating a huge (N, C, D) array.
+
+        Args:
+            features: (N, D) numpy array of sample features.
+            mean_matrix: (C, D) numpy array of class means.
+
+        Returns:
+            (N,) numpy array of min distances.
+        """
+        batch_size = 1000
+        all_min_dists = []
+        for i in range(0, len(features), batch_size):
+            batch = features[i:i + batch_size]  # (B, D)
+            # (B, C) — distance from each sample to each class mean
+            dists = np.linalg.norm(
+                batch[:, None, :] - mean_matrix[None, :, :], axis=2
+            )
+            all_min_dists.append(dists.min(axis=1))  # (B,)
+        return np.concatenate(all_min_dists)
+
+    def _get_mean_matrix(self):
+        """Get (C, D) matrix of latest class means."""
+        mean_list = []
+        for c in sorted(self._class_mean_history.keys()):
+            latest_task = max(self._class_mean_history[c].keys())
+            mean_list.append(self._class_mean_history[c][latest_task])
+        return np.stack(mean_list)
+
+    def _update_distance_stats(self, vectors, labels=None):  # labels kept for future use
+        """Compute baseline distance stats from current data.
+
+        After each task, we know how far samples sit from their nearest class
+        mean under the current backbone. This becomes the baseline for
+        detecting novelty in the next task via z-scores.
+
+        Args:
+            vectors: (N, D) feature array for all seen samples.
+            labels:  (N,) class labels.
+        """
+        mean_matrix = self._get_mean_matrix()  # (C, D)
+        min_dists = self._min_distances_to_means(vectors, mean_matrix)  # (N,)
+
+        self._dist_mean = min_dists.mean()
+        self._dist_std = min_dists.std() + 1e-8
+
+        logging.info(
+            "NoveltyMixin: distance stats — "
+            "mean={:.4f}, std={:.4f}, n_classes={}".format(
+                self._dist_mean, self._dist_std, len(mean_matrix)
+            )
+        )
+
+    def check_expansion(self, task_data_loader, z_threshold=2.0, ratio_threshold=0.5):
+        """Check whether new task data is novel enough to trigger adapter expansion.
+
+        Extracts features for incoming task data, computes distance to all
+        known class means, converts to z-scores against baseline stats from
+        the previous task. If enough samples are outliers, returns True.
+
+        Args:
+            task_data_loader: DataLoader for the incoming task's training data.
+            z_threshold: z-score above which a sample is considered novel.
+            ratio_threshold: fraction of novel samples needed to trigger expansion.
+
+        Returns:
+            bool: True if expansion should be triggered.
+        """
+        # First task — no history, must expand
+        if not hasattr(self, '_class_mean_history') or len(self._class_mean_history) == 0:
+            logging.info("NoveltyMixin: no class means yet -> expand=True")
+            return True
+
+        # No baseline stats yet
+        if not hasattr(self, '_dist_mean'):
+            logging.info("NoveltyMixin: no distance stats yet -> expand=True")
+            return True
+
+        network = self._network.module if isinstance(self._network, nn.DataParallel) else self._network
+        network.eval()
+
+        mean_matrix = self._get_mean_matrix()  # (C, D)
+
+        # Extract features for new task data
+        all_feats = []
+        with torch.no_grad():
+            for _, inputs, _ in task_data_loader:
+                out = network.extract_vector(inputs.to(self._device))
+                all_feats.append(out["features"].cpu().numpy())
+        features = np.concatenate(all_feats)  # (N, D)
+
+        # Min distance to nearest known class mean
+        min_dists = self._min_distances_to_means(features, mean_matrix)
+
+        # Z-score against baseline from previous task
+        z_scores = (min_dists - self._dist_mean) / self._dist_std
+        novelty_ratio = (z_scores > z_threshold).mean()
+
+        should_expand = novelty_ratio > ratio_threshold
+
+        logging.info(
+            "NoveltyMixin: expansion check — "
+            "mean_dist={:.4f}, mean_z={:.4f}, "
+            "novelty_ratio={:.4f}, expand={}".format(
+                min_dists.mean(), z_scores.mean(),
+                novelty_ratio, should_expand
+            )
+        )
+
+        return should_expand

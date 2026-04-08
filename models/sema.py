@@ -78,16 +78,48 @@ class Learner(BaseLearner, NoveltyMixin):
             print(f'{total_trainable_params:,} training parameters.')
             self._train_new(train_loader, test_loader)
         else:
-            for module in self._network.backbone.modules():
-                if isinstance(module, SEMAModules):
-                    module.detecting_outlier = True
-            detect_loader = DataLoader(train_loader.dataset, batch_size=self.args["detect_batch_size"], shuffle=True, num_workers=num_workers)     
-            added = self._detect_outlier(detect_loader, train_loader, test_loader, 0)
+            # Pre-check: is new data novel enough to need expansion?
+            # Use train_loader_for_protonet (mode="test", no augmentation)
+            # to match the baseline stats computed in _update_distance_stats
+            needs_expansion = self.check_expansion(self.train_loader_for_protonet)
 
-            for module in self._network.backbone.modules():
-                if isinstance(module, SEMAModules):
-                    module.detecting_outlier = False
-            if added == 0:
+            if needs_expansion:
+                # Novelty detected — adapter MUST be added. SEMA decides where.
+                original_threshold = self._network.backbone.blocks[0].adapter_module.config.exp_threshold
+                current_threshold = original_threshold
+                added = 0
+
+                max_retries = 5
+                retries = 0
+                while added == 0 and retries < max_retries:
+                    for module in self._network.backbone.modules():
+                        if isinstance(module, SEMAModules):
+                            module.config.exp_threshold = current_threshold
+                            module.added_for_task = False
+                            module.detecting_outlier = True
+                    detect_loader = DataLoader(train_loader.dataset, batch_size=self.args["detect_batch_size"], shuffle=True, num_workers=num_workers)
+                    added = self._detect_outlier(detect_loader, train_loader, test_loader, 0)
+
+                    if added == 0:
+                        current_threshold = current_threshold * 0.5
+                        retries += 1
+                        logging.info("Task {}: no adapter added, lowering threshold to {:.4f} (retry {}/{})".format(
+                            self._cur_task, current_threshold, retries, max_retries))
+
+                if added == 0:
+                    logging.info("Task {}: adapter addition failed after {} retries, fine-tuning only".format(
+                        self._cur_task, max_retries))
+                    self.update_optimizer_and_scheduler(num_epoch=self.args['func_epoch'], lr=self.init_lr)
+                    self._init_train(self.args['func_epoch'], train_loader, test_loader, self.optimizer, self.scheduler, phase='func')
+
+                # Restore original threshold
+                for module in self._network.backbone.modules():
+                    if isinstance(module, SEMAModules):
+                        module.config.exp_threshold = original_threshold
+                        module.detecting_outlier = False
+            else:
+                # Data is similar to known classes — just fine-tune, no expansion
+                logging.info("Task {}: no expansion needed, fine-tuning only".format(self._cur_task))
                 self.update_optimizer_and_scheduler(num_epoch=self.args['func_epoch'], lr=self.init_lr)
                 self._init_train(self.args['func_epoch'], train_loader, test_loader, self.optimizer, self.scheduler, phase='func')
             
