@@ -89,7 +89,7 @@ class Learner(BaseLearner, NoveltyMixin):
                 current_threshold = original_threshold
                 added = 0
 
-                max_retries = 5
+                max_retries = 10
                 retries = 0
                 while added == 0 and retries < max_retries:
                     for module in self._network.backbone.modules():
@@ -101,7 +101,7 @@ class Learner(BaseLearner, NoveltyMixin):
                     added = self._detect_outlier(detect_loader, train_loader, test_loader, 0)
 
                     if added == 0:
-                        current_threshold = current_threshold * 0.5
+                        current_threshold = current_threshold * 0.85
                         retries += 1
                         logging.info("Task {}: no adapter added, lowering threshold to {:.4f} (retry {}/{})".format(
                             self._cur_task, current_threshold, retries, max_retries))
